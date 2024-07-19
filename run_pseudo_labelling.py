@@ -282,6 +282,11 @@ def main():
         desc="preprocess dataset"
     )
     if PREPROCESSING_ONLY:
+        # from IPython import embed
+        # embed()
+        if not os.path.exists(training_args.output_dir):
+            os.makedirs(training_args.output_dir)
+            vectorized_datasets.save_to_disk(training_args.output_dir)
         return
     # 6. Resample speech dataset: `datasets` takes care of automatically loading and resampling the audio,
     # so we just need to set the correct target sampling rate.
@@ -352,7 +357,7 @@ def main():
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         raw_datasets.save_to_disk(training_args.output_dir, num_proc=data_args.preprocessing_num_workers)
-        safe_push(raw_datasets, training_args.hub_model_id, data_args.dataset_config_name)
+        # safe_push(raw_datasets, training_args.hub_model_id, data_args.dataset_config_name)
     accelerator.end_training()
 
 

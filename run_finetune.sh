@@ -1,0 +1,27 @@
+accelerate launch run_distillation.py \
+    --model_name_or_path "{your-hf-org}/{your-model-name}-init" \
+    --teacher_model_name_or_path "openai/whisper-large-v3" \
+    --train_dataset_name "{your-hf-org}/{your-dataset-name}.wer_10.0.vectorized" \
+    --train_dataset_config_name "tiny" \
+    --language "ja" \
+    --max_label_length 128 \
+    --train_split_name "train" \
+    --save_steps 2500 \
+    --warmup_steps "50" \
+    --learning_rate 0.0001 \
+    --lr_scheduler_type "constant_with_warmup" \
+    --logging_steps 50 \
+    --save_total_limit 1 \
+    --per_device_train_batch_size 16 \
+    --gradient_accumulation_steps 2 \
+    --preprocessing_num_workers 64 \
+    --dataloader_num_workers 1 \
+    --dtype "bfloat16" \
+    --output_dir "./" \
+    --wandb_project "wandb" \
+    --gradient_checkpointing \
+    --freeze_encoder \
+    --push_to_hub \
+    --do_train \
+    --overwrite_output_dir \
+    --num_train_epochs 8
