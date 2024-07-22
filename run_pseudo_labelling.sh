@@ -1,18 +1,31 @@
-# export PREPROCESSING_ONLY=1
-accelerate launch --num_processes=8 run_pseudo_labelling.py \
+export HD_DATASET_OFFLINE=1
+accelerate launch --num_processes=4 run_pseudo_labelling_new.py \
     --model_name_or_path "openai/whisper-large-v3" \
     --dataset_name "kotoba-speech/reazonspeech-all-v2_stage2_synth" \
     --dataset_config_name "subset_0" \
+    --dataset_split_name "train" \
+    --cache_dir /workspace/.cache \
+    --dataset_cache_dir /workspace/.cache \
     --text_column_name "text_en_gpt3.5" \
     --id_column_name "key" \
+    --report_to "wandb" \
+    --wandb_project "distil-whisper-labelling" \
+    --dtype "bfloat16" \
+    --attn_implementation "sdpa" \
     --per_device_eval_batch_size 32 \
-    --dataloader_num_workers 32 \
-    --preprocessing_num_workers 1 \
+    --dataloader_num_workers 8 \
+    --preprocessing_num_workers 8 \
     --logging_steps 100 \
-    --max_label_length 128 \
+    --max_label_length 256 \
+    --concatenate_audio "False" \
     --language "ja" \
+    --task "translate" \
     --return_timestamps \
     --generation_num_beams 1 \
     --overwrite_output_dir \
-    --output_dir "output-pseudolabel" \
-    --hub_model_id "{your-hf-org}/{your-dataset-name}"
+    --output_dir "/workspace/whisper-large-v3-vectorized-subset_0" \
+    --private_dataset \
+    --token "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" \
+    --hub_token "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" \
+    --push_to_hub \
+    --hub_model_id "kotoba-speech/whisper-large-v3-vectorized-subset_0"

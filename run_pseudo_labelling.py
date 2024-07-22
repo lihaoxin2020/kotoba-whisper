@@ -28,6 +28,7 @@ from transformers import (
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 
+from IPython import embed
 
 # https://stackoverflow.com/questions/71692354/facing-ssl-error-with-huggingface-pretrained-models
 os.environ['CURL_CA_BUNDLE'] = ''
@@ -75,6 +76,10 @@ class DataTrainingArguments:
         metadata={"help": "The configuration name of the dataset to use (via the datasets library)."},
     )
     dataset_dir_suffix: Optional[str] = field(default=None)
+    cache_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Where to store the pretrained models downloaded from huggingface.co"},
+    )
     preprocessing_num_workers: Optional[int] = field(
         default=None,
         metadata={"help": "The number of processes to use for the preprocessing."},
@@ -107,6 +112,10 @@ class DataTrainingArguments:
                 "only. For English speech recognition, it should be left as `None`."
             )
         },
+    )
+    task: str = field(
+        default="transcribe",
+        metadata={"help": "Task, either `transcribe` for speech recognition or `translate` for speech translation."},
     )
 
 
@@ -147,8 +156,9 @@ class DataCollatorSpeechSeq2SeqWithPadding:
         # dataloader returns a list of features which we convert to a dict
         input_features = {model_input_name: [feature[model_input_name] for feature in features]}
         label_features = {"input_ids": [feature["labels"] for feature in features]}
-        file_ids = {"input_ids": [feature["file_id"] for feature in features]}
-
+        # file_ids = {"input_ids": [feature["file_id"] for feature in features]}
+        file_ids = [feature["file_id"] for feature in features]
+        
         # reformat list to dict and set to pytorch format
         batch = self.processor.feature_extractor.pad(
             input_features,
@@ -162,12 +172,12 @@ class DataCollatorSpeechSeq2SeqWithPadding:
             padding=self.target_padding,
             return_tensors="pt",
         )
-        file_ids_batch = self.processor.tokenizer.pad(
-            file_ids,
-            max_length=self.max_target_length,
-            padding=self.target_padding,
-            return_tensors="pt",
-        )
+        # file_ids_batch = self.processor.tokenizer.pad(
+        #     file_ids,
+        #     max_length=self.max_target_length,
+        #     padding=self.target_padding,
+        #     return_tensors="pt",
+        # )
 
         # replace padding with -100 to ignore correctly when computing the loss
         labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
@@ -178,7 +188,8 @@ class DataCollatorSpeechSeq2SeqWithPadding:
             labels = labels[:, 1:]
 
         batch["labels"] = labels
-        batch["file_ids"] = file_ids_batch["input_ids"]
+        # batch["file_ids"] = file_ids_batch["input_ids"]
+        batch["file_ids"] = file_ids
 
         return batch
 
@@ -214,15 +225,16 @@ def main():
         utils.logging.set_verbosity_error()
     logger.info(f"Training/evaluation parameters {training_args}")
     # 4. Load pretrained model, tokenizer, and feature extractor
-    config = WhisperConfig.from_pretrained(model_args.model_name_or_path, token=token)
-    feature_extractor = WhisperFeatureExtractor.from_pretrained(model_args.model_name_or_path, token=token)
+    config = WhisperConfig.from_pretrained(model_args.model_name_or_path, cache_dir=data_args.cache_dir, token=token)
+    feature_extractor = WhisperFeatureExtractor.from_pretrained(model_args.model_name_or_path, cache_dir=data_args.cache_dir, token=token)
     tokenizer = WhisperTokenizerFast.from_pretrained(
-        model_args.model_name_or_path, use_fast=model_args.use_fast_tokenizer, token=token
+        model_args.model_name_or_path, use_fast=model_args.use_fast_tokenizer, cache_dir=data_args.cache_dir, token=token
     )
-    processor = WhisperProcessor.from_pretrained(model_args.model_name_or_path, token=token)
+    processor = WhisperProcessor.from_pretrained(model_args.model_name_or_path, cache_dir=data_args.cache_dir, token=token)
     model = WhisperForConditionalGeneration.from_pretrained(
         model_args.model_name_or_path,
         config=config,
+        cache_dir=data_args.cache_dir, 
         token=token,
         low_cpu_mem_usage=True,
         torch_dtype=bfloat16,
@@ -232,7 +244,7 @@ def main():
     assert model.config.decoder_start_token_id is not None, "`config.decoder_start_token_id` is not correctly defined"
     if hasattr(model.generation_config, "is_multilingual") and model.generation_config.is_multilingual:
         tokenizer.set_prefix_tokens(
-            language=data_args.language, task="transcribe", predict_timestamps=data_args.return_timestamps
+            language=data_args.language, task=data_args.task, predict_timestamps=data_args.return_timestamps
         )
     elif data_args.language is not None:
         raise ValueError(
@@ -249,6 +261,7 @@ def main():
             dataset_name,
             data_args.dataset_config_name,
             split="train",
+            cache_dir=data_args.cache_dir, 
             trust_remote_code=True,
             token=token,
             num_proc=data_args.preprocessing_num_workers,
@@ -271,7 +284,8 @@ def main():
         input_str = batch[data_args.text_column_name]
         batch["labels"] = tokenizer(input_str, max_length=max_label_length, truncation=True).input_ids
         # record the id of the sample as token ids
-        batch["file_id"] = tokenizer(batch[data_args.id_column_name], add_special_tokens=False).input_ids
+        # batch["file_id"] = tokenizer(batch[data_args.id_column_name], add_special_tokens=False).input_ids
+        batch["file_id"] = batch[data_args.id_column_name]
         return batch
 
     raw_datasets_features = list(next(iter(raw_datasets.values())).features.keys())
@@ -314,7 +328,7 @@ def main():
         "return_timestamps": data_args.return_timestamps
     }
     if hasattr(model.generation_config, "is_multilingual") and model.generation_config.is_multilingual:
-        gen_kwargs.update({"language": data_args.language, "task": "transcribe"})
+        gen_kwargs.update({"language": data_args.language, "task": data_args.task})
     # 9. Prepare everything with accelerate
     model = accelerator.prepare(model)
     effective_batch_size = training_args.per_device_eval_batch_size * accelerator.num_processes
@@ -334,6 +348,7 @@ def main():
     eval_loader = accelerator.prepare(eval_loader)
     output_csv = os.path.join(training_args.output_dir, "train-transcription.csv")
     batches = tqdm(eval_loader, desc=f"Evaluating...", disable=not accelerator.is_local_main_process)
+    embed()
     for step, batch in enumerate(batches):
         file_ids = batch.pop("file_ids")
         input_features = batch["input_features"]
