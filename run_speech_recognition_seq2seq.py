@@ -46,6 +46,8 @@ from transformers.trainer_utils import get_last_checkpoint, is_main_process
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
+from IPython import embed
+
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.42.0")
@@ -140,7 +142,7 @@ class DataTrainingArguments:
     dataset_name: str = field(
         default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
     )
-    dataset_config_name: Optional[str] = field(
+    dataset_config_name: Optional[List[str]] = field(
         default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
     )
     overwrite_cache: bool = field(
@@ -206,7 +208,7 @@ class DataTrainingArguments:
         },
     )
     eval_split_name: str = field(
-        default="test",
+        default=None,
         metadata={
             "help": "The name of the training data set split to use (via the datasets library). Defaults to 'train'"
         },
@@ -338,27 +340,39 @@ def main():
     set_seed(training_args.seed)
 
     # 4. Load dataset
-    raw_datasets = DatasetDict()
+    raw_datasets_list = []
+    for dataset_config_name in data_args.dataset_config_name:
+        raw_datasets = DatasetDict()
 
-    if training_args.do_train:
-        raw_datasets["train"] = load_dataset(
-            data_args.dataset_name,
-            data_args.dataset_config_name,
-            split=data_args.train_split_name,
-            cache_dir=model_args.cache_dir,
-            token=model_args.token,
-            trust_remote_code=model_args.trust_remote_code,
-        )
+        if training_args.do_train:
+            raw_datasets["train"] = load_dataset(
+                data_args.dataset_name,
+                # data_args.dataset_config_name,
+                dataset_config_name,
+                split=data_args.train_split_name,
+                cache_dir=model_args.cache_dir,
+                token=model_args.token,
+                trust_remote_code=model_args.trust_remote_code,
+                num_proc=data_args.preprocessing_num_workers,
+            )
 
-    if training_args.do_eval:
-        raw_datasets["eval"] = load_dataset(
-            data_args.dataset_name,
-            data_args.dataset_config_name,
-            split=data_args.eval_split_name,
-            cache_dir=model_args.cache_dir,
-            token=model_args.token,
-            trust_remote_code=model_args.trust_remote_code,
-        )
+        if training_args.do_eval:
+            if data_args.eval_split_name is None:
+                raw_datasets = raw_datasets['train'].train_test_split(test_size=500)
+                raw_datasets['eval'] = raw_datasets['test']
+                del raw_datasets['test']
+            else:
+                raw_datasets["eval"] = load_dataset(
+                    data_args.dataset_name,
+                    # data_args.dataset_config_name,
+                    dataset_config_name,
+                    split=data_args.eval_split_name,
+                    cache_dir=model_args.cache_dir,
+                    token=model_args.token,
+                    trust_remote_code=model_args.trust_remote_code,
+                    num_proc=data_args.preprocessing_num_workers,
+                )
+        raw_datasets_list.append(raw_datasets)
 
     if data_args.audio_column_name not in next(iter(raw_datasets.values())).column_names:
         raise ValueError(
@@ -417,8 +431,8 @@ def main():
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
-    if model_args.freeze_feature_encoder:
-        model.freeze_feature_encoder()
+    # if model_args.freeze_feature_encoder:
+    #     model.freeze_feature_encoder()
 
     if model_args.freeze_encoder:
         model.freeze_encoder()
@@ -456,9 +470,10 @@ def main():
     # 6. Resample speech dataset if necessary
     dataset_sampling_rate = next(iter(raw_datasets.values())).features[data_args.audio_column_name].sampling_rate
     if dataset_sampling_rate != feature_extractor.sampling_rate:
-        raw_datasets = raw_datasets.cast_column(
-            data_args.audio_column_name, datasets.features.Audio(sampling_rate=feature_extractor.sampling_rate)
-        )
+        for raw_datasets in raw_datasets_list:
+            raw_datasets = raw_datasets.cast_column(
+                data_args.audio_column_name, datasets.features.Audio(sampling_rate=feature_extractor.sampling_rate)
+            )
 
     # 7. Preprocessing the datasets.
     # We need to read the audio files as arrays and tokenize the targets.
@@ -477,10 +492,12 @@ def main():
     )
 
     if data_args.max_train_samples is not None:
-        raw_datasets["train"] = raw_datasets["train"].select(range(data_args.max_train_samples))
+        for raw_datasets in raw_datasets_list:
+            raw_datasets["train"] = raw_datasets["train"].select(range(data_args.max_train_samples))
 
     if data_args.max_eval_samples is not None:
-        raw_datasets["eval"] = raw_datasets["eval"].select(range(data_args.max_eval_samples))
+        for raw_datasets in raw_datasets_list:
+            raw_datasets["eval"] = raw_datasets["eval"].select(range(data_args.max_eval_samples))
 
     def prepare_dataset(batch):
         # process audio
@@ -499,24 +516,35 @@ def main():
         batch["labels"] = tokenizer(input_str).input_ids
         return batch
 
+    vectorized_datasets_list = []
     with training_args.main_process_first(desc="dataset map pre-processing"):
-        vectorized_datasets = raw_datasets.map(
-            prepare_dataset,
-            remove_columns=next(iter(raw_datasets.values())).column_names,
-            num_proc=data_args.preprocessing_num_workers,
-            desc="preprocess train dataset",
-        )
-
+        for i, raw_datasets in enumerate(raw_datasets_list):
+            vectorized_datasets = raw_datasets.map(
+                prepare_dataset,
+                remove_columns=next(iter(raw_datasets.values())).column_names,
+                num_proc=data_args.preprocessing_num_workers,
+                desc=f"preprocess train dataset {i}",
+            )
+            if data_args.preprocessing_only:
+                if training_args.push_to_hub:
+                    vectorized_datasets.push_to_hub(
+                        training_args.hub_model_id, 
+                        config_name=data_args.dataset_config_name[i],
+                        token=model_args.token,
+                    )
+            vectorized_datasets_list.append(vectorized_datasets)
+        
+        
     # filter data that is shorter than min_input_length or longer than
     # max_input_length
-    def is_audio_in_length_range(length):
-        return length > min_input_length and length < max_input_length
+    # def is_audio_in_length_range(length):
+    #     return length > min_input_length and length < max_input_length
 
-    vectorized_datasets = vectorized_datasets.filter(
-        is_audio_in_length_range,
-        num_proc=num_workers,
-        input_columns=["input_length"],
-    )
+    # vectorized_datasets = vectorized_datasets.filter(
+    #     is_audio_in_length_range,
+    #     num_proc=num_workers,
+    #     input_columns=["input_length"],
+    # )
 
     # for large datasets it is advised to run the preprocessing on a
     # single machine first with `args.preprocessing_only` since there will mostly likely
@@ -527,6 +555,10 @@ def main():
         cache = {k: v.cache_files for k, v in vectorized_datasets.items()}
         logger.info(f"Data preprocessing finished. Files cached at {cache}.")
         return
+    
+    vectorized_datasets = DatasetDict()
+    for key in vectorized_datasets_list[0]:
+        vectorized_datasets[key] = datasets.concatenate_datasets([ddd[key] for ddd in vectorized_datasets_list])
 
     # 8. Load Metric
     wer_metric = evaluate.load("wer", cache_dir=model_args.cache_dir)
