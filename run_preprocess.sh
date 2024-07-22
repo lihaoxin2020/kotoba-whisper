@@ -1,0 +1,41 @@
+export HF_DATASET_OFFLINE=1
+accelerate launch \
+	run_speech_recognition_seq2seq.py \
+    --cache_dir="/workspace/.cache" \
+	--model_name_or_path="kotoba-tech/kotoba-whisper-v1.1" \
+	--tokenizer_name="openai/whisper-large-v3" \
+	--dataset_name="kotoba-speech/reazonspeech-all-v2_stage2_synth" \
+	--dataset_config_name "subset_1" \
+    --text_column_name "text_en_gpt3.5" \
+    --trust_remote_code \
+	--preprocessing_only \
+	--language="ja" \
+	--task="translate" \
+	--train_split_name="train" \
+	--max_steps="5000" \
+	--output_dir="./outputs/kotoba-whisper-ja-test" \
+    --report_to="none" \
+	--per_device_train_batch_size="8" \
+	--per_device_eval_batch_size="16" \
+	--dataloader_num_workers="8" \
+	--preprocessing_num_workers="4" \
+	--logging_steps="25" \
+	--learning_rate="1e-5" \
+	--warmup_steps="500" \
+	--eval_strategy="steps" \
+	--eval_steps="1000" \
+	--save_strategy="steps" \
+	--save_steps="1000" \
+	--generation_max_length="225" \
+	--max_duration_in_seconds="30" \
+    --freeze_encoder="True" \
+	--gradient_checkpointing \
+	--fp16 \
+	--overwrite_output_dir \
+	--do_train \
+	--do_eval \
+	--predict_with_generate \
+	--seed 42 \
+    --token "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" \
+    --push_to_hub \
+    --hub_model_id "kotoba-speech/whisper-large-v3-vectorized"
